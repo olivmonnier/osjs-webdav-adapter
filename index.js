@@ -27,25 +27,21 @@
  * @author  Anders Evenrud <andersevenrud@gmail.com>
  * @licence Simplified BSD License
  */
-
-const fetch = require('node-fetch');
-const {DOMParser} = require('xmldom');
+const fetch = require("node-fetch");
+const { DOMParser } = require("xmldom");
 
 // Removes prefix from a URL
-const withoutPrefix = path => path
-  .split('/')
-  .splice(1)
-  .join('/')
-  .replace(/^\/?/, '/');
+const withoutPrefix = (path) =>
+  path.split("/").splice(1).join("/").replace(/^\/?/, "/");
 
 // Gets a WebDAV URL
 const davPath = (mount, path) => {
-  const {uri} = mount.attributes.connection;
-  const prefix = mount.attributes.connection.prefix || '/webdav';
+  const { uri } = mount.attributes.connection;
+  const prefix = mount.attributes.connection.prefix || "/webdav";
   const suffix = withoutPrefix(path);
   const params = [];
 
-  return uri + prefix + suffix + '?' + params.join('&');
+  return uri + prefix + suffix + "?" + params.join("&");
 };
 
 // Query base
@@ -56,68 +52,74 @@ const queryField = (child, ns, attr, defaultValue) => {
     value = node.textContent;
   }
 
-  return typeof value === 'undefined' ? defaultValue : value;
+  return typeof value === "undefined" ? defaultValue : value;
 };
 
 // Queries
-const queryFileId = (child, ns) => queryField(child, ns, 'getetag');
-const queryFileSize = (child, ns) => queryField(child, ns, 'getcontentlength', 0);
-const queryFileType = (child, ns) => queryField(child, ns, 'getcontenttype', 'application/octet-stream');
-const queryFilePath = (child, ns) => decodeURIComponent(queryField(child, ns, 'href', ''));
+const queryFileId = (child, ns) => queryField(child, ns, "getetag");
+const queryFileSize = (child, ns) =>
+  queryField(child, ns, "getcontentlength", 0);
+const queryFileType = (child, ns) =>
+  queryField(child, ns, "getcontenttype", "application/octet-stream");
+const queryFilePath = (child, ns) =>
+  decodeURIComponent(queryField(child, ns, "href", ""));
 
 // Transforms a WebDAV PROPFIND result
-const transformReaddir = (mount, root) => response => {
-  const ns = mount.attributes.connection.ns || 'DAV:';
-  const dir = root.split(':').slice(-1)[0];
-  const prefix = (mount.attributes.connection.prefix || '/webdav') + dir;
-  const childNodes = response.getElementsByTagNameNS(ns, 'response');
+const transformReaddir = (mount, root) => (response) => {
+  const ns = mount.attributes.connection.ns || "DAV:";
+  const dir = root.split(":").slice(-1)[0];
+  const childNodes = response.getElementsByTagNameNS(ns, "response");
+  let prefix = (mount.attributes.connection.prefix || "/webdav") + dir;
+
+  prefix = prefix.replace(/\/\//g, "/");
 
   return Array.from(childNodes)
-    .map(child => {
+    .map((child) => {
       const path = queryFilePath(child, ns);
       const isDirectory = !!path.match(/\/$/);
-      const filename = path.substr(prefix.length, path.length)
-        .replace(/\/$/, '');
+      const filename = path
+        .substr(prefix.length, path.length)
+        .replace(/\/$/, "");
 
-      return {child, path, filename, isDirectory};
+      return { child, path, filename, isDirectory };
     })
-    .filter(({filename}) => filename !== '')
-    .filter(({path}) => {
+    .filter(({ filename }) => filename !== "")
+    .filter(({ path }) => {
       const pathWithoutPrefix = path.substr(prefix.length, path.length);
-      const count = pathWithoutPrefix
-        .split('/')
-        .filter(Boolean)
-        .length;
+      const count = pathWithoutPrefix.split("/").filter(Boolean).length;
 
-      return (count === 1);
+      return count === 1;
     })
-    .map(({child, filename, isDirectory}) => {
+    .map(({ child, filename, isDirectory }) => {
       return {
         isDirectory,
         isFile: !isDirectory,
         id: queryFileId(child, ns),
         size: parseInt(queryFileSize(child, ns), 10),
         mime: isDirectory ? null : queryFileType(child, ns),
-        path: root + filename,
-        filename: filename.replace(/^\//, ''),
-        stat: {}
+        path: (root + (root.slice(-1) !== "/" ? "/" : "") + filename).replace(
+          /\/\//g,
+          "/"
+        ),
+        filename: filename.replace(/^\//, ""),
+        stat: {},
       };
     });
 };
 
 // Gets authorization header value
-const getAuthorization = mount => {
-  const {username, password, access_token} = mount.attributes.connection;
+const getAuthorization = (mount) => {
+  const { username, password, access_token } = mount.attributes.connection;
   return access_token
     ? `Bearer ${access_token}`
-    : 'Basic ' + (new Buffer(`${username}:${password}`)).toString('base64');
+    : "Basic " + new Buffer(`${username}:${password}`).toString("base64");
 };
 
 // Creates a XML parser
-const createXmlParser = body => {
+const createXmlParser = (body) => {
   try {
     const parser = new DOMParser();
-    const doc = parser.parseFromString(body, 'application/xml');
+    const doc = parser.parseFromString(body, "application/xml");
 
     return doc;
   } catch (e) {
@@ -131,69 +133,99 @@ const createXmlParser = body => {
 const request = (method, url, options, mount, binary) => {
   Object.assign(options, {
     method,
-    headers: {}
+    headers: {},
   });
 
   Object.assign(options.headers, {
-    Authorization: getAuthorization(mount)
+    Authorization: getAuthorization(mount),
   });
 
-  const result = fetch(url, options);
+  const newUrl = new URL(url);
+  newUrl.pathname = newUrl.pathname.replace(/\/\//g, "/");
 
-  return binary ? result : result
-    .then(response => response.text())
-    .then(createXmlParser);
+  const result = fetch(newUrl.href, options);
+
+  return binary
+    ? result
+    : result.then((response) => response.text()).then(createXmlParser);
 };
 
 // Makes sure we can make a request with what we have
-const before = mount => {
-  return mount.attributes.connection &&
-    mount.attributes.connection.uri
+const before = (mount) => {
+  return mount.attributes.connection && mount.attributes.connection.uri
     ? Promise.resolve(true)
-    : Promise.reject(new Error('Missing configuration from webdav mountpoint'));
+    : Promise.reject(new Error("Missing configuration from webdav mountpoint"));
 };
 
 // Our adapter
-const adapter = core => {
+const adapter = (core) => {
+  const readfile = (vfs) => (file, options) =>
+    before(vfs.mount)
+      .then(() => request("GET", davPath(vfs.mount, file), {}, vfs.mount, true))
+      .then((response) => response.body);
 
-  const readfile = vfs => (file, options, mount) => before(mount)
-    .then(() => request('GET', davPath(mount, file), {}, mount, true))
-    .then(response => response.body);
+  const writefile = (vfs) => (file, binary, options) =>
+    before(vfs.mount).then(() =>
+      request(
+        "PUT",
+        davPath(vfs.mount, file),
+        {
+          body: binary,
+        },
+        vfs.mount
+      )
+    );
 
-  const writefile = vfs => (file, binary, options, mount) => before(mount)
-    .then(() => request('PUT', davPath(mount, file), {
-      body: binary
-    }, mount));
+  const unlink = (vfs) => (file, options) =>
+    before(vfs.mount).then(() =>
+      request("DELETE", davPath(vfs.mount, file), {}, vfs.mount)
+    );
 
-  const unlink = vfs => (file, options, mount) => before(mount)
-    .then(() => request('DELETE', davPath(mount, file), {}, mount));
+  const copy = (vfs) => (src, dest, options) =>
+    before(vfs.mount).then(() =>
+      request(
+        "COPY",
+        davPath(vfs.mount, src),
+        {
+          headers: {
+            Destination: davPath(vfs.mount, dest),
+          },
+        },
+        vfs.mount
+      )
+    );
 
-  const copy = vfs => (src, dest, options, mount) => before(mount)
-    .then(() => request('COPY', davPath(mount, src), {
-      headers: {
-        Destination: davPath(mount, dest)
-      }
-    }, mount));
+  const rename = (vfs) => (src, dest, options) =>
+    before(vfs.mount).then(() =>
+      request(
+        "MOVE",
+        davPath(vfs.mount, src),
+        {
+          headers: {
+            Destination: davPath(vfs.mount, dest),
+          },
+        },
+        vfs.mount
+      )
+    );
 
-  const rename = vfs => (src, dest, options, mount) => before(mount)
-    .then(() => request('MOVE', davPath(mount, src), {
-      headers: {
-        Destination: davPath(mount, dest)
-      }
-    }, mount));
+  const exists = (vfs) => (file, options) =>
+    before(vfs.mount)
+      .then(() => request("PROPFIND", davPath(vfs.mount, file), {}, vfs.mount))
+      .then(() => true);
 
-  const exists = vfs => (file, options, mount) => before(mount)
-    .then(() => request('PROPFIND', davPath(mount, file), {}, mount))
-    .then(() => true);
+  const mkdir = (vfs) => (file, options) =>
+    before(vfs.mount).then(() => request("KMCOL", davPath(vfs.mount, file)));
 
-  const mkdir = vfs => (file, options, mount) => before(mount)
-    .then(() => request('KMCOL', davPath(mount, file)));
+  const readdir = (vfs) => (root, options) => {
+    return before(vfs.mount).then(() =>
+      request("PROPFIND", davPath(vfs.mount, root), {}, vfs.mount).then(
+        transformReaddir(vfs.mount, root)
+      )
+    );
+  };
 
-  const readdir = vfs => (root, options, mount) => before(mount)
-    .then(() => request('PROPFIND', davPath(mount, root), {}, mount)
-      .then(transformReaddir(mount, root)));
-
-  return {readfile, writefile, unlink, copy, rename, exists, mkdir, readdir};
+  return { readfile, writefile, unlink, copy, rename, exists, mkdir, readdir };
 };
 
 module.exports = adapter;
